@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	opensearch "github.com/opensearch-project/opensearch-go"
-	opensearchapi "github.com/opensearch-project/opensearch-go/opensearchapi"
+	"github.com/opensearch-project/opensearch-go"
+	"github.com/opensearch-project/opensearch-go/opensearchapi"
 	"io"
 	"net/http"
 	"nginx-log/pkg/config"
@@ -30,6 +30,7 @@ type searchResponse struct {
 			Sort []int64 `json:"sort"`
 		} `json:"hits"`
 	} `json:"hits"`
+	Took int `json:"took"`
 }
 
 type message struct {
@@ -49,7 +50,7 @@ type message struct {
 	UserAgent            string    `json:"user_agent"`
 }
 
-type requestStat struct {
+type ResponseStat struct {
 	Request string
 	Count   int
 	Min     float64
@@ -72,6 +73,7 @@ func parseResult(body []byte) ([]string, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	fmt.Println("Search took:", resp.Took, "ms")
 	messages := make([]string, 0, len(resp.Hits.Hits))
 	var lastSort int64
 	for i, hit := range resp.Hits.Hits {
@@ -99,7 +101,7 @@ func executeSearch(ctx context.Context, client *opensearch.Client, gteTime strin
         "search_after": [%d],
         "sort": [ { "@timestamp": "asc" } ],
         "_source": [ "message", "@timestamp" ],
-        "size": 100
+        "size": 1000
     }`, gteTime, sort)
 	} else {
 		query = fmt.Sprintf(`{
@@ -114,7 +116,7 @@ func executeSearch(ctx context.Context, client *opensearch.Client, gteTime strin
         },
         "sort": [ { "@timestamp": "asc" } ],
         "_source": [ "message", "@timestamp" ],
-        "size": 100
+        "size": 1000
     }`, gteTime)
 	}
 
@@ -143,9 +145,9 @@ func executeSearch(ctx context.Context, client *opensearch.Client, gteTime strin
 	return parseResult(body)
 }
 
-func printRequestTimes(requestTimes map[string][]float64) {
+func getStats(requestTimes map[string][]float64) []ResponseStat {
 	//fmt.Println("Total number unique requests:", len(requestTimes))
-	stats := make([]requestStat, 0)
+	stats := make([]ResponseStat, 0)
 	for request, times := range requestTimes {
 		count := len(times)
 		if count == 0 {
@@ -167,7 +169,7 @@ func printRequestTimes(requestTimes map[string][]float64) {
 		if avgTime < 1.0 && count == 1 {
 			continue // Discard records with avgTime 0.00
 		}
-		stats = append(stats, requestStat{
+		stats = append(stats, ResponseStat{
 			Request: request,
 			Count:   count,
 			Min:     minTime,
@@ -181,13 +183,10 @@ func printRequestTimes(requestTimes map[string][]float64) {
 		return stats[i].Avg > stats[j].Avg
 	})
 
-	fmt.Printf("%-10s %-10s %-10s %-10s %-s\n", "min", "avg", "max", "Count", "Path")
-	for _, stat := range stats {
-		fmt.Printf("%-10.2f %-10.2f %-10.2f %-10d %-s\n", stat.Min, stat.Avg, stat.Max, stat.Count, stat.Request)
-	}
+	return stats
 }
 
-func GetResponse(ctx context.Context, cfg *config.Config, intervalStr string) {
+func GetResponse(ctx context.Context, cfg *config.Config, intervalStr string) []ResponseStat {
 
 	client, err := opensearch.NewClient(opensearch.Config{
 		Transport: &http.Transport{
@@ -221,17 +220,21 @@ func GetResponse(ctx context.Context, cfg *config.Config, intervalStr string) {
 	}
 	fmt.Println("Total number of requests:", len(fullMessages))
 	requestTimes := parseMessages(fullMessages)
-	printRequestTimes(requestTimes)
+	return getStats(requestTimes)
 }
 
 func parseRequest(request string) string {
 	// Remove everything after '?'
 	result := strings.SplitN(request, "?", 2)[0]
 	parts := strings.Split(result, "/")
-	re := regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+	re22 := regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+	reUUID := regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	for i, part := range parts {
-		if re.MatchString(part) {
-			parts[i] = "XXXXXXXXXXXXXXX" // Mask the 22-character string
+		if re22.MatchString(part) {
+			parts[i] = "XXXXXXXXXXXXXXX" // Mask both 22-char and UUID
+		}
+		if reUUID.MatchString(part) {
+			parts[i] = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" // Mask UUID with dashes
 		}
 	}
 	return strings.Join(parts, "/")

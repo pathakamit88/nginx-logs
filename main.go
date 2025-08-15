@@ -7,6 +7,7 @@ import (
 	"nginx-log/pkg/config"
 	"nginx-log/pkg/ossearch"
 	"os"
+	"time"
 )
 
 func main() {
@@ -27,5 +28,18 @@ func main() {
 		intervalStr = os.Args[1]
 	}
 
-	ossearch.GetResponse(context.Background(), cfg, intervalStr)
+	start := time.Now()
+	stats := ossearch.GetResponse(context.Background(), cfg, intervalStr)
+	elapsed := time.Since(start)
+
+	fmt.Printf("Total time taken: %v\n", elapsed)
+
+	printOnConsole(stats)
+}
+
+func printOnConsole(stats []ossearch.ResponseStat) {
+	fmt.Printf("%-10s %-10s %-10s %-10s %-s\n", "min", "avg", "max", "Count", "Path")
+	for _, stat := range stats {
+		fmt.Printf("%-10.2f %-10.2f %-10.2f %-10d %-s\n", stat.Min, stat.Avg, stat.Max, stat.Count, stat.Request)
+	}
 }
